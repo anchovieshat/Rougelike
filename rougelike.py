@@ -8,8 +8,8 @@ fontsize = 15
 
 sprite_height = tilesize
 sprite_width = tilesize
-screen_height = 768
-screen_width = 640
+screen_height = 1024
+screen_width = 768
 
 tiles_per_row = screen_width / tilesize
 tiles_per_col = screen_height / tilesize
@@ -26,7 +26,8 @@ monster_health_index = 2
 class Game:
     def __init__(self):
         self.screen = MainMenu(self)
-        self.fonter = FontManager("cousine", fontsize, bold=True)
+        self.fonter = FontManager("ubuntu", fontsize, bold=True)
+        self.soundman = SoundManager()
 
     def key_pressed(self, key_char):
         self.screen.key_pressed(key_char)
@@ -46,6 +47,31 @@ class FontManager:
 
     def draw(self, surface, pos, text, color):
         self.font.render_to(surface, pos, text, color)
+
+class SoundManager:
+    def __init__(self):
+        self.sounds = []
+        self.sounds.append(pygame.mixer.Sound("assets/sound/hit.wav"))
+        self.sounds.append(pygame.mixer.Sound("assets/sound/select.wav"))
+
+    def play(self, index):
+        self.sounds[index].play()
+
+    def stop(self, index):
+        self.sounds[index].stop()
+
+class MusicManager:
+    def load(filename):
+        pygame.mixer.music.load(filename)
+
+    def play():
+        pygame.mixer.music.play()
+
+    def stop():
+        pygame.mixer.music.fadeout(250)
+
+    def update(self):
+        pass
 
 class Screen:
     def __init__(self, game):
@@ -94,8 +120,10 @@ class Menu(Screen):
         i = 0
         if key_char == pygame.K_w or key_char == pygame.K_UP:
             i -= 1
+            self.game.soundman.play(0)
         if key_char == pygame.K_s or key_char == pygame.K_DOWN:
             i += 1
+            self.game.soundman.play(0)
 
         self.selected += i
 
@@ -106,6 +134,7 @@ class Menu(Screen):
 
         if key_char == pygame.K_RETURN:
             self.items[self.selected].action()
+            self.game.soundman.play(0)
 
     def draw(self, surface):
         for (i, item) in enumerate(self.items):
@@ -131,6 +160,8 @@ class MainMenu(Menu):
 
 class CreditsMenu(Menu):
     def __init__(self, game):
+        MusicManager.load("assets/music/tomato.ogg")
+        MusicManager.play()
         items = []
         items.append(MenuItem("Rougelike: Hand-Carved by Cloin", lambda: None))
         Menu.__init__(self, game, items)
@@ -138,6 +169,22 @@ class CreditsMenu(Menu):
 
     def key_pressed(self, key_char):
         if key_char == pygame.K_q:
+            MusicManager.stop()
+            self.game.switch_screen(MainMenu(self.game))
+
+        Menu.key_pressed(self, key_char)
+        self.selected = -1
+
+class EndMenu(Menu):
+    def __init__(self, game):
+        items = []
+        items.append(MenuItem("Your death was inevitable...", lambda: None))
+        items.append(MenuItem("Press Enter to Menu", lambda: None))
+        Menu.__init__(self, game, items)
+        self.selected = -1
+
+    def key_pressed(self, key_char):
+        if key_char == pygame.K_q or key_char == pygame.K_RETURN:
             self.game.switch_screen(MainMenu(self.game))
 
         Menu.key_pressed(self, key_char)
@@ -151,7 +198,10 @@ class Tile(WorldObject):
         self.entities = []
 
     def add_entity(self, entity):
-        self.entities.append(entity)
+        if hasattr(entity, "inventory"):
+            self.entities.append(entity)
+        else:
+            self.entities.insert(len(self.entities)-1, entity)
 
     def remove_entity(self, entity):
         self.entities.remove(entity)
@@ -175,7 +225,10 @@ class Tile(WorldObject):
         surface.blit(self.sprite, (x, y))
 
         for entity in self.entities:
-            entity.draw(surface, x, y-(sprite_height/2))
+            if hasattr(entity, "name"):
+                entity.draw(surface, x, y-(sprite_height*(1/8)))
+            else:
+                entity.draw(surface, x, y-(sprite_height/2))
 
 class Entity(WorldObject):
     def __init__(self, world, sprites, loc):
@@ -214,6 +267,27 @@ class Entity(WorldObject):
     def draw(self, surface, x, y):
         surface.blit(self.sprites[self.anim_state], (x, y))
 
+class Item(Entity):
+    def __init__(self, world, sprites, loc, name):
+        Entity.__init__(self, world, sprites, loc)
+        self.name = name
+
+    def draw(self, surface, x, y):
+        if self.name == "sword":
+            i = 0
+        elif self.name == "apple":
+            i = 1
+        elif self.name == "bow":
+            i = 2
+        elif self.name == "helmet":
+            i = 3
+        surface.blit(self.sprites[i], (x, y))
+
+    def collide(self, collider):
+        collider.inventory.append(self)
+        collider.update_stats()
+        Entity.remove(self)
+
 class Player(Entity):
     skin_color = pygame.Color(203, 203, 203)
     bag_color = pygame.Color(152, 152, 152)
@@ -229,6 +303,9 @@ class Player(Entity):
         self.y = loc[1]
         self.health = 100
         self.attack = 10
+        self.health_mod = 0
+        self.attack_mod = 0
+        self.inventory = []
 
         self.original = sprites
         for sprite in sprites:
@@ -242,9 +319,30 @@ class Player(Entity):
             px.replace(self.boots_color, pygame.Color(55, 0, 0))
             self.sprites.append(sprite)
 
+    def update_stats(self):
+        self.attack_mod = 0
+        self.health_mod = 0
+
+        for i in range(0, len(self.inventory)):
+            if self.inventory[i].name == "sword":
+                self.attack_mod += 1
+            elif self.inventory[i].name == "apple":
+                self.health_mod += 1
+
     def update_displays(self):
-        self.world.items[player_health_index].data = self.health
-        self.world.items[player_attack_index].data = self.attack
+        if self.health <= 0:
+            self.world.game.switch_screen(EndMenu(self.world.game))
+
+        self.world.attributes[player_health_index].data = (self.health + self.health_mod)
+        self.world.attributes[player_attack_index].data = (self.attack + self.attack_mod)
+
+    def drop_item(self, index):
+        if len(self.inventory) > 0:
+            self.inventory[index].x = self.x
+            self.inventory[index].y = self.y
+            self.world.game_map[self.x][self.y].add_entity(self.inventory[index])
+            del(self.inventory[index])
+            self.update_stats()
 
     def move_to(self, x, y):
         if self.x > x:
@@ -278,6 +376,10 @@ class Monster(Entity):
         Entity.__init__(self, game, [], loc)
 
         self.health = 20
+        self.attack = 5
+
+        self.health_mod = 0
+        self.attack_mod = 0
 
         self.original = sprites
         for sprite in sprites:
@@ -287,9 +389,9 @@ class Monster(Entity):
             self.sprites.append(sprite)
 
     def collide(self, collider):
-        self.health -= collider.attack
+        self.health -= (collider.attack + collider.attack_mod)
 
-        collider.health -= 10
+        collider.health -= (self.attack + self.attack_mod)
         collider.update_displays()
 
         if self.health <= 0:
@@ -331,10 +433,14 @@ class World(Screen):
         self.tile_map = load_sprite("assets/sprites/tilesx128.png", sprite_width, sprite_height)
 
         game_map = load_map('map')
+
         self.game_map = []
+        self.items = []
+        self.attributes = []
+        self.monsters = []
+
         self.width = len(game_map)
         self.height = len(game_map[0])
-        self.items = []
 
         temp_surf = pygame.Surface((tilesize, tilesize))
 
@@ -342,26 +448,24 @@ class World(Screen):
             line = []
             self.game_map.append(line)
             for y in range(0, self.height):
-                print(game_map[x][y])
                 if game_map[x][y] == '0':
                     line.append(Tile(self, self.tile_map[0][0], False))
                 elif game_map[x][y] == '1':
                     line.append(Tile(self, self.tile_map[0][1], True))
                 elif game_map[x][y] == 'P':
                     line.append(Tile(self, self.tile_map[0][0], False))
-                    player_loc = (x, y)
+                    self.player = Player(self, self.entity_map[0], (x, y))
                 elif game_map[x][y] == 'M':
                     line.append(Tile(self, self.tile_map[0][0], False))
-                    monster_loc = (x, y)
+                    self.monsters.append(Monster(self, self.entity_map[1], (x, y)))
+                elif game_map[x][y] == 'S':
+                    line.append(Tile(self, self.tile_map[0][0], False))
+                    self.items.append(Item(self, self.entity_map[2], (x,y), "sword"))
 
-        self.monsters = []
-        self.monsters.append(Monster(self, self.entity_map[1], player_loc))
-
-        self.player = Player(self, self.entity_map[0], monster_loc)
         self.center()
 
-        self.items.append(DisplayItem("Player Health: ", self.player.health))
-        self.items.append(DisplayItem("Player Attack: ", self.player.attack))
+        self.attributes.append(DisplayItem("Player Health: ", self.player.health))
+        self.attributes.append(DisplayItem("Player Attack: ", self.player.attack))
 
     def center(self):
         x = self.player.x
@@ -388,16 +492,18 @@ class World(Screen):
         self.view = Rect((x, y),(x+tiles_per_row, y+tiles_per_col-1))
 
     def key_pressed(self, key_char):
-        if key_char == pygame.K_w:
+        if key_char == pygame.K_w or key_char == pygame.K_k:
             self.player.move(0, -1)
-        if key_char == pygame.K_s:
+        if key_char == pygame.K_s or key_char == pygame.K_j:
             self.player.move(0, 1)
-        if key_char == pygame.K_a:
+        if key_char == pygame.K_a or key_char == pygame.K_h:
             self.player.move(-1, 0)
-        if key_char == pygame.K_d:
+        if key_char == pygame.K_d or key_char == pygame.K_l:
             self.player.move(1, 0)
+        if key_char == pygame.K_x:
+            self.player.drop_item(0)
         if key_char == pygame.K_q:
-            sys.exit()
+            self.game.switch_screen(MainMenu(self.game))
 
 
     def draw(self, surface):
@@ -406,9 +512,10 @@ class World(Screen):
                 self.game_map[x][y].draw(surface, (x-self.view.left)*tilesize, (y-self.view.top+1)*tilesize)
 
         self.player.update_displays()
-        for (i, item) in enumerate(self.items):
-            rect = self.game.fonter.font.get_rect(item.output(), size = fontsize)
-            self.game.fonter.draw(surface, (0, (0 + (((rect.bottom - rect.top)+5)*i))), item.output(), pygame.Color(255, 255, 255))
+
+        for (i, attr) in enumerate(self.attributes):
+            rect = self.game.fonter.font.get_rect(attr.output(), size = fontsize)
+            self.game.fonter.draw(surface, (0, (0 + (((rect.bottom - rect.top)+5)*i))), attr.output(), pygame.Color(255, 255, 255))
 
 def load_sprite(filename, width, height):
     image = pygame.image.load(filename).convert_alpha()
